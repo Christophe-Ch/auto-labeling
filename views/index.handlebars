@@ -1,0 +1,151 @@
+<h1>AutoLabeling</h1>
+<canvas id="visualizer" height="480" width="640"></canvas>
+<button id="reject">Reject</button>
+<button id="accept">Accept</button>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.4.0/dist/tf.min.js"></script>
+<script>
+const labelMap = {
+    1: { name: "MyLabel", color: "red" },
+};
+
+const drawRect = (
+    box,
+    predictionClass,
+    score,
+    imgWidth,
+    imgHeight,
+    ctx
+) => {
+    // Extract variables
+    const [y, x, height, width] = box;
+
+    // Set styling
+    ctx.strokeStyle = labelMap[predictionClass]["color"];
+    ctx.lineWidth = 10;
+    ctx.fillStyle = "white";
+    ctx.font = "30px Arial";
+
+    // DRAW!!
+    ctx.beginPath();
+    ctx.fillText(
+        labelMap[predictionClass]["name"] + " - " + Math.round(score * 100) / 100,
+        x * imgWidth,
+        y * imgHeight - 10
+    );
+    ctx.rect(
+        x * imgWidth,
+        y * imgHeight,
+        (width * imgWidth) / 2,
+        (height * imgHeight) / 2
+    );
+    ctx.stroke();
+};
+</script>
+<script>
+    let model, currentImageName, label, xmin, ymin, xmax, ymax;
+
+    const images = JSON.parse(decodeURIComponent("{{{imageArray}}}"));
+    const canvas = document.getElementById("visualizer");
+    const canvasContext = canvas.getContext("2d");
+
+    const accept = async () => {
+        fetch("http://localhost/accept", {
+            method: 'POST',
+            headers: {
+            'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                filename: currentImageName, 
+                xmin: Math.round(xmin * 640), 
+                ymin: Math.round(ymin * 480), 
+                xmax: Math.round(xmax * 640), 
+                ymax: Math.round(ymax * 480), 
+                label: labelMap[label].name
+            })
+        });
+
+        loadImage();
+    }
+
+    const reject = async () => {
+        fetch("http://localhost/reject", {
+            method: 'POST',
+            headers: {
+            'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({filename: currentImageName})
+        });
+
+        loadImage();
+    }
+
+    const loadImage = () => {
+        document.getElementById("accept").disabled = true;
+        document.getElementById("reject").disabled = true;
+
+        currentImageName = images.shift();
+
+        const currentImage = new Image();
+        console.log(`http://localhost/pictures/notEvaluated/${currentImageName}`);
+        currentImage.src = `http://localhost/pictures/notEvaluated/${currentImageName}`;
+        currentImage.onload = async () => {
+            console.log("image loaded")
+            canvasContext.drawImage(currentImage, 0, 0);
+
+            const image = tf.browser.fromPixels(currentImage);
+            const resized = tf.image.resizeBilinear(image, [640, 480]);
+            const casted = resized.cast("int32");
+            const expanded = casted.expandDims(0);
+
+            /*
+             * [0] => (?)
+             * [1] => Boxes
+             * [2] => Classes
+             * [3] => (?)
+             * [4] => Scores
+             * [5] => Number of predictions
+             * [6] => (?)
+             * [7] => (?)
+            */
+            const results = await model.executeAsync(expanded);
+
+            const boxes = (await results[1].array())[0];
+            const classes = (await results[2].array())[0];
+            const scores = (await results[4].array())[0];
+
+            const score = Math.max(...scores);
+            const index = scores.indexOf(score);
+            const box = boxes[index];
+            label = classes[index];
+
+            [ymin, xmin, ymax, xmax] = box
+
+            drawRect(
+                box,
+                label,
+                score,
+                640,
+                480,
+                canvasContext
+            );
+
+            document.getElementById("accept").disabled = false;
+            document.getElementById("reject").disabled = false;
+        }
+    }
+
+    (async () => {
+        model = await tf.loadGraphModel('http://localhost/model/model.json');
+        loadImage();
+
+        document.getElementById("accept").addEventListener("click", accept);
+        document.getElementById("reject").addEventListener("click", reject);
+    })();
+</script>
+
+<style>
+    canvas {
+        display: block;
+    }
+</style>
